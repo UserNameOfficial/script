@@ -1,6 +1,7 @@
 -- Ragim Panel / Terminal UI
 --
--- 명령어 텍스트 클릭: 기능 ON / OFF
+-- 제목 표시줄 드래그: 창 이동
+-- /tp: /apply로 지정한 플레이어에게 이동
 -- F: 비행 ON / OFF
 -- WASD: 비행 이동
 -- Space / E: 상승
@@ -8,8 +9,7 @@
 -- Enter: 플레이어 잠금 OFF
 -- \: 패널 숨기기 / 표시
 --
--- /console: 실제 Lua 실행창 펼치기
--- Lua 실행은 실행기의 loadstring 지원이 필요합니다.
+-- Lua Console은 실행기의 loadstring을 사용합니다.
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
@@ -32,7 +32,9 @@ if type(environment[CLEANUP_KEY]) == "function" then
 end
 
 local oldGui = playerGui:FindFirstChild("RagimPanel")
-if oldGui then oldGui:Destroy() end
+if oldGui then
+	oldGui:Destroy()
+end
 
 -- 설정
 local settings = {
@@ -54,14 +56,15 @@ local flightHumanoid, flightRoot
 local attachment, velocity, orientation
 local savedAutoRotate, savedPlatformStand, savedMouseBehavior
 local watchedHumanoid
-local draggingSlider
+
+local draggingSlider = nil
+local windowDrag = nil
 
 local connections = {}
 local movementConnections = {}
 local originalCollisions = {}
 local espEntries = {}
 
--- 터미널 색상
 local C = {
 	Background = Color3.fromRGB(22, 31, 39),
 	Titlebar = Color3.fromRGB(17, 24, 31),
@@ -74,6 +77,7 @@ local C = {
 	Error = Color3.fromRGB(238, 130, 130),
 }
 
+-- 공통 도우미
 local function connect(signal, callback)
 	local connection = signal:Connect(callback)
 	table.insert(connections, connection)
@@ -95,7 +99,7 @@ local function trim(text)
 	return text:match("^%s*(.-)%s*$")
 end
 
--- 메인 창
+-- 메인 GUI
 local gui = create("ScreenGui", {
 	Name = "RagimPanel",
 	ResetOnSpawn = false,
@@ -126,15 +130,17 @@ local titlebar = create("Frame", {
 	BorderSizePixel = 0,
 }, panel)
 
-create("TextLabel", {
-	Size = UDim2.new(1, -75, 1, 0),
-	Position = UDim2.fromOffset(12, 0),
+-- 드래그 가능한 제목 영역
+local titleHandle = create("TextButton", {
+	Size = UDim2.new(1, -64, 1, 0),
 	BackgroundTransparency = 1,
-	Text = "ragim@client: ~",
+	Text = "  ragim@client: ~",
 	TextColor3 = C.Muted,
 	TextSize = 13,
 	Font = Enum.Font.Code,
 	TextXAlignment = Enum.TextXAlignment.Left,
+	AutoButtonColor = false,
+	Active = true,
 }, titlebar)
 
 local hideButton = create("TextButton", {
@@ -148,9 +154,27 @@ local hideButton = create("TextButton", {
 	AutoButtonColor = false,
 }, titlebar)
 
+connect(titleHandle.InputBegan, function(input)
+	if closed then return end
+
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+
+		draggingSlider = nil
+
+		windowDrag = {
+			input = input,
+			touch = input.UserInputType == Enum.UserInputType.Touch,
+			startPointer = input.Position,
+			startPosition = panel.Position,
+		}
+	end
+end)
+
 connect(hideButton.Activated, function()
 	panel.Visible = false
 	draggingSlider = nil
+	windowDrag = nil
 end)
 
 local content = create("ScrollingFrame", {
@@ -212,7 +236,6 @@ label("[ client control terminal ]", 20, 13, C.Muted)
 separator()
 label("commands", 24, 16, C.Accent)
 
--- 클릭 가능한 명령어 목록
 local function command(name, description)
 	local button = widget("TextButton", {
 		Size = UDim2.new(1, 0, 0, 32),
@@ -253,7 +276,11 @@ local flyButton = command("/fly", "비행")
 local noclipButton = command("/wallhack", "벽 통과")
 local espButton = command("/esp", "이름 / 거리 / 윤곽선")
 local lockButton = command("/lock", "플레이어 잠금")
+local tpButton = command("/tp", "지정한 플레이어로 이동")
 local consoleButton = command("/console", "Lua 실행창")
+
+tpButton.Text = string.format("  %-11s [GO]", "/tp")
+tpButton.TextColor3 = C.Accent
 
 separator()
 label("control", 24, 16, C.Accent)
@@ -347,7 +374,7 @@ local function applyMovementSettings()
 	end
 end
 
--- 슬라이더 + 숫자 입력
+-- 슬라이더 / 숫자 입력
 local function slider(name, key, minimum, maximum)
 	local row = widget("Frame", {
 		Size = UDim2.new(1, 0, 0, 58),
@@ -422,6 +449,8 @@ local function slider(name, key, minimum, maximum)
 		if input.UserInputType == Enum.UserInputType.MouseButton1
 			or input.UserInputType == Enum.UserInputType.Touch then
 
+			windowDrag = nil
+
 			draggingSlider = {
 				input = input,
 				setFromX = setFromX,
@@ -453,38 +482,77 @@ slider("flyspeed", "FlySpeed", 0, 500)
 slider("walkspeed", "WalkSpeed", 0, 500)
 slider("jumppower", "JumpPower", 0, 1000)
 
+-- 창 드래그와 슬라이더 드래그 처리
 connect(UIS.InputChanged, function(input)
 	if closed or not panel.Visible then
 		draggingSlider = nil
+		windowDrag = nil
 		return
 	end
 
-	local drag = draggingSlider
-	if not drag then return end
+	local drag = windowDrag
 
-	if drag.touch then
-		if input == drag.input then
-			drag.setFromX(input.Position.X)
+	if drag then
+		local matchingInput =
+			(drag.touch and input == drag.input)
+			or (
+				not drag.touch
+				and input.UserInputType == Enum.UserInputType.MouseMovement
+			)
+
+		if matchingInput then
+			local delta = input.Position - drag.startPointer
+			local start = drag.startPosition
+
+			panel.Position = UDim2.new(
+				start.X.Scale,
+				start.X.Offset + delta.X,
+				start.Y.Scale,
+				start.Y.Offset + delta.Y
+			)
 		end
-	elseif input.UserInputType == Enum.UserInputType.MouseMovement then
-		drag.setFromX(input.Position.X)
+	end
+
+	local sliderDrag = draggingSlider
+
+	if sliderDrag then
+		if sliderDrag.touch then
+			if input == sliderDrag.input then
+				sliderDrag.setFromX(input.Position.X)
+			end
+		elseif input.UserInputType == Enum.UserInputType.MouseMovement then
+			sliderDrag.setFromX(input.Position.X)
+		end
 	end
 end)
 
 connect(UIS.InputEnded, function(input)
-	local drag = draggingSlider
-	if not drag then return end
+	local drag = windowDrag
 
-	if input == drag.input
+	if drag and (
+		input == drag.input
 		or (
 			not drag.touch
 			and input.UserInputType == Enum.UserInputType.MouseButton1
-		) then
+		)
+	) then
+		windowDrag = nil
+	end
+
+	local sliderDrag = draggingSlider
+
+	if sliderDrag and (
+		input == sliderDrag.input
+		or (
+			not sliderDrag.touch
+			and input.UserInputType == Enum.UserInputType.MouseButton1
+		)
+	) then
 		draggingSlider = nil
 	end
 end)
 
--- 대상 선택
+-- 대상 선택 UI
 separator()
 label("target", 24, 16, C.Accent)
 
@@ -519,17 +587,36 @@ local applyTargetButton = create("TextButton", {
 	AutoButtonColor = false,
 }, targetRow)
 
-local selectionLabel = label("selected: nearest player", 34, 12, C.Muted)
-local statusLabel = label("movement values: auto restore ON", 30, 12, C.Muted)
+local selectionLabel = label(
+	"selected: nearest player",
+	34,
+	12,
+	C.Muted
+)
+
+local tpFeedback = label(
+	"tp: 대상 이름을 /apply로 지정하세요.",
+	32,
+	12,
+	C.Muted
+)
+
+local statusLabel = label(
+	"movement values: auto restore ON",
+	30,
+	12,
+	C.Muted
+)
 
 separator()
 
 label(
-	"[ F ] fly   [ WASD ] move\n"
+	"[ drag titlebar ] move window\n"
+		.. "[ F ] fly   [ WASD ] move\n"
 		.. "[ Space / E ] up   [ Q ] down\n"
 		.. "[ Enter ] unlock   [ \\ ] hide / show\n"
 		.. "wallhack ON: 바닥도 통과합니다.",
-	78,
+	96,
 	12,
 	C.Muted
 )
@@ -819,6 +906,8 @@ connect(applyTargetButton.Activated, function()
 		targetBox.Text = ""
 		selectionLabel.Text = "selected: nearest player"
 		selectionLabel.TextColor3 = C.Muted
+		tpFeedback.Text = "tp: 대상 이름을 /apply로 지정하세요."
+		tpFeedback.TextColor3 = C.Muted
 		return
 	end
 
@@ -833,8 +922,12 @@ connect(applyTargetButton.Activated, function()
 	selectedUserId = matched.UserId
 	selectedUsername = matched.Name
 	targetBox.Text = "@" .. matched.Name
+
 	selectionLabel.Text = "selected: @" .. matched.Name
 	selectionLabel.TextColor3 = C.Accent
+
+	tpFeedback.Text = "tp: /tp를 클릭하면 지정한 대상에게 이동합니다."
+	tpFeedback.TextColor3 = C.Muted
 end)
 
 local function findLockTarget()
@@ -879,6 +972,62 @@ local function findLockTarget()
 
 	return nearestPlayer, nearestRoot
 end
+
+-- 지정한 플레이어에게 TP
+local function tpMessage(text, isError)
+	tpFeedback.Text = text
+	tpFeedback.TextColor3 = isError and C.Error or C.Accent
+	writeOutput(text)
+end
+
+connect(tpButton.Activated, function()
+	if closed then return end
+
+	-- TP는 /apply로 특정 플레이어를 지정해야 사용 가능
+	if selectedUserId == nil then
+		tpMessage("tp: 먼저 이름을 입력하고 /apply를 누르세요.", true)
+		return
+	end
+
+	local root = getAliveRoot(player)
+
+	if not root then
+		tpMessage("tp: 내 캐릭터가 살아 있어야 합니다.", true)
+		return
+	end
+
+	local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+
+	if humanoid.SeatPart then
+		tpMessage("tp: 좌석에서 일어난 뒤 다시 시도하세요.", true)
+		return
+	end
+
+	if root.Anchored then
+		tpMessage("tp: 캐릭터가 고정되어 있습니다.", true)
+		return
+	end
+
+	local targetPlayer, targetRoot = findLockTarget()
+
+	if not targetPlayer or not targetRoot then
+		tpMessage("tp: 대상이 없거나 캐릭터가 로드되지 않았습니다.", true)
+		return
+	end
+
+	-- 대상의 뒤쪽 4 studs로 이동
+	local destination = targetRoot.CFrame * CFrame.new(0, 0, 4)
+
+	if velocity then
+		velocity.VectorVelocity = Vector3.zero
+	end
+
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+	root.CFrame = destination
+
+	tpMessage("tp: @" .. targetPlayer.Name .. "에게 이동했습니다.", false)
+end)
 
 -- 기존 벽 통과 기능
 local function restoreCollisions()
@@ -1059,7 +1208,6 @@ RunService:BindToRenderStep(
 			statusLabel.Text = selectedUserId
 				and ("waiting: @" .. selectedUsername)
 				or "lock: no target"
-
 			return
 		end
 
@@ -1240,7 +1388,7 @@ end)
 
 connect(Players.PlayerRemoving, removeESP)
 
--- 명령어 텍스트 클릭
+-- 명령어 클릭 연결
 connect(flyButton.Activated, function()
 	if not closed then setFlying(not flying) end
 end)
@@ -1273,6 +1421,7 @@ connect(UIS.InputBegan, function(input, processed)
 	if input.KeyCode == Enum.KeyCode.BackSlash then
 		panel.Visible = not panel.Visible
 		draggingSlider = nil
+		windowDrag = nil
 		return
 	end
 
@@ -1373,20 +1522,21 @@ connect(player.CharacterRemoving, function()
 	stopFlying()
 	setNoclip(false)
 
-	-- ESP / UI 표시 / 대상 선택 / 설정값은 유지
+	-- ESP / UI 위치 / 대상 선택 / 설정값 유지
 end)
 
 if player.Character then
 	task.spawn(onCharacterAdded, player.Character)
 end
 
--- 정리
+-- 패널 정리
 -- 콘솔에서 실행한 별도 Lua 코드까지 종료하지는 않음
 local function cleanup()
 	if closed then return end
 
 	closed = true
 	draggingSlider = nil
+	windowDrag = nil
 
 	RunService:UnbindFromRenderStep(RENDER_NAME)
 
@@ -1417,8 +1567,11 @@ environment[CLEANUP_KEY] = cleanup
 connect(gui.Destroying, cleanup)
 
 updateButtons()
+
 writeOutput("[ready] Ragim Panel")
-writeOutput("[ui] \\ 키로 패널 숨기기 / 표시")
+writeOutput("[ui] 제목 표시줄 드래그로 창 이동")
+writeOutput("[ui] \\ 키로 숨기기 / 표시")
+writeOutput("[tp] 대상 이름 → /apply → /tp")
 
 if type(loadstring) == "function" then
 	writeOutput("[lua] loadstring available")
