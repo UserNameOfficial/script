@@ -1,0 +1,27 @@
+name: Ragim Panel Discord release
+
+on:
+  push:
+    branches: [main]
+    paths: [script.lua]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ragim-discord-release
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Verify published script and notify Discord
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+        run: python3 notify_discord.py --commit "$GITHUB_SHA" --from-commit
+
