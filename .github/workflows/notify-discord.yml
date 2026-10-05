@@ -5,6 +5,11 @@ on:
     branches: [main]
     paths: [script.lua]
   workflow_dispatch:
+    inputs:
+      check_only:
+        description: Verify access without sending Discord messages
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -23,5 +28,11 @@ jobs:
       - name: Verify published script and notify Discord
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
-        run: python3 notify_discord.py --commit "$GITHUB_SHA" --from-commit
+          CHECK_ONLY: ${{ inputs.check_only }}
+        run: |
+          if [ "$CHECK_ONLY" = "true" ]; then
+            python3 notify_discord.py --commit "$GITHUB_SHA" --from-commit --check
+          else
+            python3 notify_discord.py --commit "$GITHUB_SHA" --from-commit
+          fi
 
