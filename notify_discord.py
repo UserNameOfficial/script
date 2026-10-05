@@ -143,6 +143,22 @@ def publish(commit: str, changes: list[str], date: str, token: str) -> None:
         print("최신 업데이트 채널 이름이 이미 최신 상태임")
 
 
+def check_access(commit: str, token: str) -> None:
+    verify_release(release_url(commit), Path(SCRIPT_NAME))
+    channels = [request("GET", f"/channels/{channel_id}", token) for channel_id in (
+        ANNOUNCEMENT_CHANNEL, SUMMARY_CHANNEL, LATEST_CHANNEL
+    )]
+    if any(str(channel.get("id")) != channel_id for channel, channel_id in zip(
+        channels, (ANNOUNCEMENT_CHANNEL, SUMMARY_CHANNEL, LATEST_CHANNEL)
+    )):
+        raise RuntimeError("Discord 채널 ID가 예상과 다릅니다.")
+    if len({channel.get("guild_id") for channel in channels}) != 1:
+        raise RuntimeError("세 채널이 같은 Discord 서버에 속하지 않습니다.")
+    for channel_id in (ANNOUNCEMENT_CHANNEL, SUMMARY_CHANNEL):
+        request("GET", f"/channels/{channel_id}/messages?limit=1", token)
+    print("Raw 배포본과 Discord 채널 읽기 권한 확인 완료")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--commit", required=True, help="배포된 Git commit SHA")
@@ -150,18 +166,24 @@ def main() -> int:
     parser.add_argument("--from-commit", action="store_true", help="커밋 본문의 목록이나 제목을 변경 내용으로 사용")
     parser.add_argument("--date", default=datetime.now(timezone(timedelta(hours=9))).date().isoformat())
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--check", action="store_true", help="배포본과 채널 접근만 확인하고 전송하지 않음")
     args = parser.parse_args()
     try:
         if args.from_commit and args.change:
             raise ValueError("--from-commit과 --change는 함께 사용할 수 없습니다.")
         changes = changes_from_commit(args.commit) if args.from_commit else args.change or []
         announcement, summary, channel_name = make_payloads(args.commit, changes, args.date)
+        if args.dry_run and args.check:
+            raise ValueError("--dry-run과 --check는 함께 사용할 수 없습니다.")
         if args.dry_run:
             print(json.dumps({"announcement": announcement, "summary": summary, "channel_name": channel_name}, ensure_ascii=False, indent=2))
             return 0
         token = os.environ.get("DISCORD_BOT_TOKEN", "")
         if not token:
             raise RuntimeError("DISCORD_BOT_TOKEN 환경 변수가 없습니다.")
+        if args.check:
+            check_access(args.commit, token)
+            return 0
         publish(args.commit, changes, args.date, token)
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"오류: {exc}", file=sys.stderr)
